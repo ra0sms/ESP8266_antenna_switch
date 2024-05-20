@@ -4,6 +4,7 @@
 
 [Manual in Russian](docs/Manual_console_rus.pdf)
 
+Source code for server and client in ```src``` folder.
 The console schematic:
 
 ![sch_rk](DipTrace/sch_rk.jpg)
