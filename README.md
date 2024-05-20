@@ -1,6 +1,6 @@
 ## WI-FI control console for antenna switches
 
-[Manual in English](docs/Manual_console_eng.pdf)
+[Manual in English](docs/Manual_console_en.pdf)
 
 [Manual in Russian](docs/Manual_console_rus.pdf)
 
