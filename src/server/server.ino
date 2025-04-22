@@ -13,9 +13,13 @@ ra0sms@bk.ru
 #include <ESP8266mDNS.h>
 #include <EEPROM.h>
 /*#include <WiFiManager.h>*/
+const bool AUTH = false;
+
+const char* www_username = "admin";
+const char* www_password = "password123";
  
 
-const char *softAP_ssid = "RKconsole_sn300";
+const char *softAP_ssid = "RKconsole_sn304";
 const char *softAP_password = "1234567890";
 const char *myHostname = "esp8266";
  
@@ -81,7 +85,8 @@ void CheckStat ()
   if (stat[7] == '1') currentlabel+=String(label7);
 }
 
-void handleXML() {
+void handleXML()
+{
   buildXML();
   server.send(200, "text/xml", XML);
 }
@@ -581,7 +586,15 @@ void setup(void){
         Serial.println("connected...yeey :)");
     }*/
   
-  server.on("/", handleRoot);
+  if (!AUTH) server.on("/", handleRoot);
+  else {
+     server.on("/", []() {
+     if (!server.authenticate(www_username, www_password)) { 
+       return server.requestAuthentication(); 
+     }
+     handleRoot();
+   });
+  }
   server.on("/wifi", handleWifi);
   server.on("/label", handleLabel);
   server.on("/labelsave", handleLabelSave);
