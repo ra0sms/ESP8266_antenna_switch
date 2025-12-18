@@ -19,7 +19,7 @@ const char* www_username = "admin";
 const char* www_password = "password123";
  
 
-const char *softAP_ssid = "RKconsole_sn304";
+const char *softAP_ssid = "RKconsole_sn310";
 const char *softAP_password = "1234567890";
 const char *myHostname = "esp8266";
  
