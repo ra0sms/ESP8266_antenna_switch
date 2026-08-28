@@ -13,7 +13,6 @@ June 2025 - Add CSS, improve visability, add authentification
 #include <ESP8266WebServer.h>
 #include <DNSServer.h>
 #include <ESP8266mDNS.h>
-#include <EEPROM.h>
 
 
 const bool AUTH = true;
@@ -38,120 +37,10 @@ char label6[32] ="";
 char label7[32] ="";
 String currentlabel ="";
 String javaScript, XML;
- 
-int gpio0_pin = 16;
-int gpio1_pin = 5;
-int gpio2_pin = 4;
-int gpio3_pin = 0;
-int gpio4_pin = 2;
-int gpio5_pin = 14;
-int gpio6_pin = 12;
-int gpio7_pin = 13;
-int gpio8_pin = 15;
-char stat[8] =  "";
-int tim = 0;
-int sec = 0;
-int minute = 0;
-int hour = 0;
-int day = 0;
-int flagAP=0;
-int flag_off=0;
 
-
-const byte DNS_PORT = 53;
-DNSServer dnsServer;
-
-ESP8266WebServer server(80);
-
-/** Returns true if the request is authorized; sends 401 when denied. */
-bool authorized() {
-  if (!AUTH) return true;
-  if (!server.authenticate(www_username, www_password)) {
-    server.requestAuthentication();
-    return false;
-  }
-  return true;
-}
-
-/** Send a 302 redirect and close the connection. */
-void redirectTo(const char* path) {
-  server.sendHeader("Location", path, true);
-  server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  server.sendHeader("Pragma", "no-cache");
-  server.sendHeader("Expires", "-1");
-  server.send(302, "text/plain", "");
-  server.client().stop();
-}
-
-IPAddress apIP(192, 168, 4, 1);
-IPAddress netMsk(255, 255, 255, 0);
-boolean connect;
-unsigned long lastConnectTry = 0;
-unsigned int status = WL_IDLE_STATUS;
-
-
-void CheckStat() {
-  currentlabel = "";
-  if (stat[0] == '1') currentlabel += String(label0) + " ";
-  if (stat[1] == '1') currentlabel += String(label1) + " ";
-  if (stat[2] == '1') currentlabel += String(label2) + " ";
-  if (stat[3] == '1') currentlabel += String(label3) + " ";
-  if (stat[4] == '1') currentlabel += String(label4) + " ";
-  if (stat[5] == '1') currentlabel += String(label5) + " ";
-  if (stat[6] == '1') currentlabel += String(label6) + " ";
-  if (stat[7] == '1') currentlabel += String(label7);
-}
-
-void handleXML() {
-  if (!authorized()) return;
-  buildXML();
-  server.send(200, "text/xml", XML);
-}
-
-void buildJavascript() {
-  javaScript = R"(
-<script>
-const updateStatus = () => {
-  fetch('/xml', { method: 'PUT' })
-    .then(response => response.text())
-    .then(str => (new DOMParser()).parseFromString(str, "text/xml"))
-    .then(xml => {
-      const message = xml.querySelector("response").textContent;
-      document.getElementById('runtime').textContent = message;
-      
-      // Update button states
-      for (let i = 0; i < 8; i++) {
-        const btn = document.getElementById(`toggleBtn${i}`);
-        if (btn) {
-          const isActive = message.includes(btn.dataset.label);
-          btn.textContent = isActive ? "OFF" : "ON";
-          btn.className = isActive ? "btn btn-off" : "btn btn-on";
-          btn.href = isActive ? `soc${i}Off` : `soc${i}On`;
-        }
-      }
-    })
-    .catch(err => console.error('Error:', err));
-  
-  setTimeout(updateStatus, 100);
-};
-
-document.addEventListener('DOMContentLoaded', updateStatus);
-</script>
-)";
-}
-
-void buildXML() {
-  XML = "<?xml version='1.0'?>";
-  XML += "<response>";
-  XML += currentlabel;
-  XML += "</response>";
-}
-
-void handleToggle() {
-  if (!authorized()) return;
-  buildJavascript();
-  
-  String webPage = String(R"(
+/* Static HTML chunks served from flash (PROGMEM) so we never build a large
+   page in RAM - this removes the main source of heap fragmentation. */
+static const char P_TOGGLE_HEAD[] PROGMEM = R"(
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -280,34 +169,9 @@ void handleToggle() {
     </div>
     
     <div class="toggle-grid">
-)");
+)";
 
-  // Генерация элементов управления
-  for (int i = 0; i < 8; i++) {
-    String label = (i == 0) ? String(label0) : 
-                  (i == 1) ? String(label1) :
-                  (i == 2) ? String(label2) :
-                  (i == 3) ? String(label3) :
-                  (i == 4) ? String(label4) :
-                  (i == 5) ? String(label5) :
-                  (i == 6) ? String(label6) : String(label7);
-    
-    bool isActive = stat[i] == '1';
-    
-    webPage += "<div class=\"toggle-item\">";
-    webPage += "<span class=\"toggle-label" + String(isActive ? " active\"" : "\"") + ">";
-    webPage += label;
-    webPage += "</span>";
-    webPage += "<a id=\"toggleBtn" + String(i) + "\" ";
-    webPage += "data-label=\"" + label + "\" ";
-    webPage += "class=\"btn " + String(isActive ? "btn-off\"" : "btn-on\"") + " ";
-    webPage += "href=\"" + String(isActive ? "soc" + String(i) + "Off" : "soc" + String(i) + "On") + "\">";
-    webPage += String(isActive ? "OFF" : "ON");
-    webPage += "</a>";
-    webPage += "</div>";
-  }
-
-  webPage += R"(
+static const char P_TOGGLE_FOOT[] PROGMEM = R"(
     </div>
     
     <div class="footer">
@@ -316,20 +180,12 @@ void handleToggle() {
   </div>
 )";
 
-  webPage += javaScript;
-  webPage += R"(
+static const char P_CLOSE[] PROGMEM = R"(
 </body>
 </html>
 )";
 
-  server.send(200, "text/html", webPage);
-}
-
-void handleSWR() {
-  if (!authorized()) return;
-  buildJavascript();
-  
-  String webPage = String(R"(
+static const char P_SWR_HEAD[] PROGMEM = R"(
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -453,10 +309,9 @@ void handleSWR() {
     </div>
     
     <div class="toggle-grid">
-)");
+)";
 
-  // Добавляем JavaScript для динамического обновления
-  webPage += R"(
+static const char P_SWR_SCRIPT[] PROGMEM = R"(
   <script>
   function updateButtons() {
     fetch('/xml')
@@ -480,34 +335,12 @@ void handleSWR() {
       });
   }
   
-  setInterval(updateButtons, 500);
+  setInterval(updateButtons, 1000);
   updateButtons(); // Вызываем сразу при загрузке
   </script>
-  )";
+)";
 
-  // Генерация кнопок для каждого канала
-  for (int i = 0; i < 8; i++) {
-    String label = (i == 0) ? String(label0) : 
-                  (i == 1) ? String(label1) :
-                  (i == 2) ? String(label2) :
-                  (i == 3) ? String(label3) :
-                  (i == 4) ? String(label4) :
-                  (i == 5) ? String(label5) :
-                  (i == 6) ? String(label6) : String(label7);
-    
-    bool isActive = stat[i] == '1';
-    
-    webPage += "<div class=\"toggle-item\">";
-    webPage += "<span class=\"toggle-label\">" + label + "</span>";
-    webPage += "<a id=\"btn" + String(i) + "\" data-label=\"" + label + "\" ";
-    webPage += "href=\"" + String(isActive ? "socket" + String(i) + "Off" : "socket" + String(i) + "On") + "\" ";
-    webPage += "class=\"btn " + String(isActive ? "btn-off\"" : "btn-on\"") + ">";
-    webPage += String(isActive ? "OFF" : "ON");
-    webPage += "</a>";
-    webPage += "</div>";
-  }
-
-  webPage += R"(
+static const char P_SWR_FOOT[] PROGMEM = R"(
     </div>
     
     <div class="footer">
@@ -517,13 +350,489 @@ void handleSWR() {
 </body>
 </html>
 )";
+ 
+int gpio0_pin = 16;
+int gpio1_pin = 5;
+int gpio2_pin = 4;
+int gpio3_pin = 0;
+int gpio4_pin = 2;
+int gpio5_pin = 14;
+int gpio6_pin = 12;
+int gpio7_pin = 13;
+int gpio8_pin = 15;
+char stat[8] =  "";
+int tim = 0;
+int sec = 0;
+int minute = 0;
+int hour = 0;
+int day = 0;
+int flagAP=0;
+int flag_off=0;
+
+
+const byte DNS_PORT = 53;
+DNSServer dnsServer;
+
+ESP8266WebServer server(80);
+
+/** Returns true if the request is authorized; sends 401 when denied. */
+bool authorized() {
+  if (!AUTH) return true;
+  if (!server.authenticate(www_username, www_password)) {
+    server.requestAuthentication();
+    return false;
+  }
+  return true;
+}
+
+
+IPAddress apIP(192, 168, 4, 1);
+IPAddress netMsk(255, 255, 255, 0);
+boolean connect;
+unsigned long lastConnectTry = 0;
+unsigned int status = WL_IDLE_STATUS;
+
+
+void CheckStat() {
+  currentlabel = "";
+  if (stat[0] == '1') currentlabel += String(label0) + " ";
+  if (stat[1] == '1') currentlabel += String(label1) + " ";
+  if (stat[2] == '1') currentlabel += String(label2) + " ";
+  if (stat[3] == '1') currentlabel += String(label3) + " ";
+  if (stat[4] == '1') currentlabel += String(label4) + " ";
+  if (stat[5] == '1') currentlabel += String(label5) + " ";
+  if (stat[6] == '1') currentlabel += String(label6) + " ";
+  if (stat[7] == '1') currentlabel += String(label7);
+}
+
+void handleXML() {
+  if (!authorized()) return;
+  server.sendHeader("Connection", "close");
+  buildXML();
+  server.send(200, "text/xml", XML);
+}
+
+void buildJavascript() {
+  javaScript = R"(
+<script>
+const updateStatus = () => {
+  fetch('/xml', { method: 'PUT' })
+    .then(response => response.text())
+    .then(str => (new DOMParser()).parseFromString(str, "text/xml"))
+    .then(xml => {
+      const message = xml.querySelector("response").textContent;
+      document.getElementById('runtime').textContent = message;
+      
+      // Update button states
+      for (let i = 0; i < 8; i++) {
+        const btn = document.getElementById(`toggleBtn${i}`);
+        if (btn) {
+          const isActive = message.includes(btn.dataset.label);
+          btn.textContent = isActive ? "OFF" : "ON";
+          btn.className = isActive ? "btn btn-off" : "btn btn-on";
+          btn.href = isActive ? `soc${i}Off` : `soc${i}On`;
+        }
+      }
+    })
+    .catch(err => console.error('Error:', err));
   
-  server.send(200, "text/html", webPage);
+  setTimeout(updateStatus, 1000);
+};
+
+document.addEventListener('DOMContentLoaded', updateStatus);
+</script>
+)";
+}
+
+void buildXML() {
+  XML = "<?xml version='1.0'?>";
+  XML += "<response>";
+  XML += currentlabel;
+  XML += "</response>";
+}
+
+void handleToggle() {
+  if (!authorized()) return;
+  server.sendHeader("Connection", "close");
+  buildJavascript();
+
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html", "");
+
+  server.sendContent_P(PSTR(R"(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Remote Toggle Control</title>
+  <style>
+    :root {
+      --primary: #3498db;
+      --secondary: #2ecc71;
+      --danger: #e74c3c;
+      --dark: #2c3e50;
+      --light: #ecf0f1;
+    }
+    
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f5f7fa;
+      margin: 0;
+      padding: 20px;
+      color: var(--dark);
+    }
+    
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 10px;
+      padding: 25px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    
+    h1 {
+      color: var(--primary);
+      text-align: center;
+      margin-bottom: 30px;
+    }
+    
+    .toggle-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 15px;
+      margin-bottom: 30px;
+    }
+    
+    .toggle-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    
+    .toggle-label {
+      flex-grow: 1;
+      font-weight: 500;
+    }
+    
+    .toggle-label.active {
+      color: var(--danger);
+      font-weight: bold;
+    }
+    
+    .btn {
+      border: none;
+      color: white;
+      padding: 8px 16px;
+      text-align: center;
+      text-decoration: none;
+      display: inline-block;
+      font-size: 14px;
+      font-weight: 500;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      min-width: 80px;
+    }
+    
+    .btn-on {
+      background-color: var(--secondary);
+    }
+    
+    .btn-off {
+      background-color: var(--danger);
+    }
+    
+    .btn:hover {
+      opacity: 0.9;
+      transform: translateY(-2px);
+    }
+    
+    .status-display {
+      font-family: 'Lucida Console', monospace;
+      font-size: 1.2em;
+      margin: 20px 0;
+      padding: 15px;
+      background: var(--light);
+      border-radius: 5px;
+      text-align: center;
+    }
+    
+    .footer {
+      text-align: center;
+      margin-top: 30px;
+    }
+    
+    .footer a {
+      color: var(--primary);
+      text-decoration: none;
+    }
+    
+    .footer a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Toggle Switch Control</h1>
+    
+    <div class="status-display">
+      <span id="runtime"></span>
+    </div>
+    
+    <div class="toggle-grid">
+)"));
+
+  // Генерация элементов управления
+  for (int i = 0; i < 8; i++) {
+    String label = (i == 0) ? String(label0) :
+                  (i == 1) ? String(label1) :
+                  (i == 2) ? String(label2) :
+                  (i == 3) ? String(label3) :
+                  (i == 4) ? String(label4) :
+                  (i == 5) ? String(label5) :
+                  (i == 6) ? String(label6) : String(label7);
+    
+    bool isActive = stat[i] == '1';
+    
+    server.sendContent("<div class=\"toggle-item\">");
+    server.sendContent("<span class=\"toggle-label" + String(isActive ? " active\"" : "\"") + ">");
+    server.sendContent(label);
+    server.sendContent("</span>");
+    server.sendContent("<a id=\"toggleBtn" + String(i) + "\" ");
+    server.sendContent("data-label=\"" + label + "\" ");
+    server.sendContent("class=\"btn " + String(isActive ? "btn-off\"" : "btn-on\"") + " ");
+    server.sendContent("href=\"" + String(isActive ? "soc" + String(i) + "Off" : "soc" + String(i) + "On") + "\">");
+    server.sendContent(String(isActive ? "OFF" : "ON"));
+    server.sendContent("</a>");
+    server.sendContent("</div>");
+  }
+
+  server.sendContent_P(PSTR(R"(
+    </div>
+    
+    <div class="footer">
+      <a href="/">← Return to Home Page</a>
+    </div>
+  </div>
+)"));
+  server.sendContent(javaScript);
+  server.sendContent_P(PSTR(R"(
+</body>
+</html>
+)"));
+  server.sendContent("");
+}
+
+void handleSWR() {
+  if (!authorized()) return;
+  server.sendHeader("Connection", "close");
+
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html", "");
+
+  server.sendContent_P(PSTR(R"(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WI-FI Remote Console</title>
+  <style>
+    :root {
+      --primary: #3498db;
+      --secondary: #2ecc71;
+      --danger: #e74c3c;
+      --dark: #2c3e50;
+      --light: #ecf0f1;
+    }
+    
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f5f7fa;
+      margin: 0;
+      padding: 20px;
+      color: var(--dark);
+    }
+    
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 10px;
+      padding: 25px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    
+    h1 {
+      color: var(--primary);
+      text-align: center;
+      margin-bottom: 30px;
+    }
+    
+    .toggle-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 15px;
+      margin-bottom: 30px;
+    }
+    
+    .toggle-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    
+    .toggle-label {
+      flex-grow: 1;
+      font-weight: 500;
+    }
+    
+    .btn {
+      border: none;
+      color: white;
+      padding: 8px 16px;
+      text-align: center;
+      text-decoration: none;
+      display: inline-block;
+      font-size: 14px;
+      font-weight: 500;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      min-width: 80px;
+    }
+    
+    .btn-on {
+      background-color: var(--secondary);
+    }
+    
+    .btn-off {
+      background-color: var(--danger);
+    }
+    
+    .btn:hover {
+      opacity: 0.9;
+      transform: translateY(-2px);
+    }
+    
+    .status-display {
+      font-family: 'Lucida Console', monospace;
+      font-size: 1.2em;
+      margin: 20px 0;
+      padding: 15px;
+      background: var(--light);
+      border-radius: 5px;
+      text-align: center;
+    }
+    
+    .footer {
+      text-align: center;
+      margin-top: 30px;
+    }
+    
+    .footer a {
+      color: var(--primary);
+      text-decoration: none;
+    }
+    
+    .footer a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>WI-FI Remote Console</h1>
+    
+    <div class="status-display">
+      <span id="runtime"></span>
+    </div>
+    
+    <div class="toggle-grid">
+)"));
+
+  // JavaScript для динамического обновления
+  server.sendContent_P(PSTR(R"(
+  <script>
+  function updateButtons() {
+    fetch('/xml')
+      .then(response => response.text())
+      .then(str => (new DOMParser()).parseFromString(str, "text/xml"))
+      .then(xml => {
+        const statusText = xml.querySelector("response").textContent;
+        document.getElementById('runtime').textContent = statusText;
+        
+        const statuses = statusText.split(' ');
+        
+        for (let i = 0; i < 8; i++) {
+          const btn = document.getElementById(`btn${i}`);
+          if (btn) {
+            const isActive = statusText.includes(btn.dataset.label);
+            btn.textContent = isActive ? "OFF" : "ON";
+            btn.className = isActive ? "btn btn-off" : "btn btn-on";
+            btn.href = isActive ? `socket${i}Off` : `socket${i}On`;
+          }
+        }
+      });
+  }
+  
+  setInterval(updateButtons, 1000);
+  updateButtons(); // Вызываем сразу при загрузке
+  </script>
+  )"));
+
+  // Генерация кнопок для каждого канала
+  for (int i = 0; i < 8; i++) {
+    String label = (i == 0) ? String(label0) :
+                  (i == 1) ? String(label1) :
+                  (i == 2) ? String(label2) :
+                  (i == 3) ? String(label3) :
+                  (i == 4) ? String(label4) :
+                  (i == 5) ? String(label5) :
+                  (i == 6) ? String(label6) : String(label7);
+    
+    bool isActive = stat[i] == '1';
+    
+    server.sendContent("<div class=\"toggle-item\">");
+    server.sendContent("<span class=\"toggle-label\">" + label + "</span>");
+    server.sendContent("<a id=\"btn" + String(i) + "\" data-label=\"" + label + "\" ");
+    server.sendContent("href=\"" + String(isActive ? "socket" + String(i) + "Off" : "socket" + String(i) + "On") + "\" ");
+    server.sendContent("class=\"btn " + String(isActive ? "btn-off\"" : "btn-on\"") + ">");
+    server.sendContent(String(isActive ? "OFF" : "ON"));
+    server.sendContent("</a>");
+    server.sendContent("</div>");
+  }
+
+  server.sendContent_P(PSTR(R"(
+    </div>
+    
+    <div class="footer">
+      <a href="/">← Return to Home Page</a>
+    </div>
+  </div>
+</body>
+</html>
+)"));
+  server.sendContent("");
 }
 
 
 void handleRoot() {
   if (!authorized()) return;
+  server.sendHeader("Connection", "close");
   server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   server.sendHeader("Pragma", "no-cache");
   server.sendHeader("Expires", "-1");
@@ -640,6 +949,7 @@ void handleRoot() {
 
 void handleLabel() {
   if (!authorized()) return;
+  server.sendHeader("Connection", "close");
   server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   server.sendHeader("Pragma", "no-cache");
   server.sendHeader("Expires", "-1");
@@ -788,6 +1098,7 @@ void handleLabel() {
 void handleLabelSave() {
   Serial.println("labels save");
   if (!authorized()) return;
+  server.sendHeader("Connection", "close");
   // Reject saving when every label is empty (prevents accidental wipe)
   if (server.arg("l0").length() == 0 && server.arg("l1").length() == 0 &&
       server.arg("l2").length() == 0 && server.arg("l3").length() == 0 &&
@@ -820,37 +1131,68 @@ void handleLabelSave() {
   /*connect = strlen(ssid) > 0; // Request WLAN connect with new credentials if there is a SSID*/
 }
 
+/* ---------------------------------------------------------------------------
+ * Persistent settings storage.
+ * Uses a flash sector computed from the REAL flash size, so saving works on
+ * small (1M) boards regardless of the configured board flash-size. The stock
+ * EEPROM library selects a sector from the CONFIGURED size (e.g. 4M), which on
+ * a physically 1M chip lies beyond the memory -> writes silently fail.
+ * ------------------------------------------------------------------------- */
+#define CFG_SEC_SIZE 4096
+
+struct Settings {
+  char magic[4];
+  char ssid[32];
+  char password[32];
+  char labels[8][32];
+};
+static Settings cfgStore;
+
+// union guarantees 4-byte alignment required by the flash API
+static union {
+  uint32_t w[(sizeof(Settings) + 3) / 4];
+  uint8_t  b[sizeof(Settings)];
+} cfgBuf;
+
+static uint32_t cfgSector() {
+  uint32_t sectors = ESP.getFlashChipRealSize() / CFG_SEC_SIZE;
+  // use a sector safely inside the real flash, leaving the last one alone
+  return (sectors > 2) ? (sectors - 2) : 1;
+}
+
+static void cfgLoad() {
+  memset(&cfgStore, 0, sizeof(cfgStore));
+  memset(cfgBuf.b, 0, sizeof(cfgBuf.b));
+  ESP.flashRead(cfgSector() * CFG_SEC_SIZE, cfgBuf.w, sizeof(Settings));
+  memcpy(&cfgStore, cfgBuf.b, sizeof(Settings));
+  if (memcmp(cfgStore.magic, "RKC1", 4) != 0) memset(&cfgStore, 0, sizeof(cfgStore));
+}
+
+static bool cfgSave() {
+  memcpy(cfgStore.magic, "RKC1", 4);
+  memcpy(cfgBuf.b, &cfgStore, sizeof(Settings));
+  if (!ESP.flashEraseSector(cfgSector())) return false;
+  return ESP.flashWrite(cfgSector() * CFG_SEC_SIZE, cfgBuf.w, sizeof(Settings));
+}
+
 void loadLabels() {
-  EEPROM.begin(512);
-  EEPROM.get(100, label0);
-  EEPROM.get(100 + sizeof(label0), label1);
-  EEPROM.get(100 + sizeof(label0) + sizeof(label1), label2);
-  EEPROM.get(100 + sizeof(label0) + sizeof(label1) + sizeof(label2), label3);
-  EEPROM.get(100 + sizeof(label0) + sizeof(label1) + sizeof(label2) + sizeof(label3), label4);
-  EEPROM.get(100 + sizeof(label0) + sizeof(label1) + sizeof(label2) + sizeof(label3) + sizeof(label4), label5);
-  EEPROM.get(100 + sizeof(label0) + sizeof(label1) + sizeof(label2) + sizeof(label3) + sizeof(label4) + sizeof(label5), label6);
-  EEPROM.get(100 + sizeof(label0) + sizeof(label1) + sizeof(label2) + sizeof(label3) + sizeof(label4) + sizeof(label5) + sizeof(label6), label7);
-  char ok[7 + 1];
-  EEPROM.get(100 + sizeof(label0) + sizeof(label1) + sizeof(label2) + sizeof(label3) + sizeof(label4) + sizeof(label5) + sizeof(label6) + sizeof(label7), ok);
-  EEPROM.end();
-  if (String(ok) != String("OK")) {
-    label0[0] = 0;
-    label1[0] = 0;
-    label2[0] = 0;
-    label3[0] = 0;
-    label4[0] = 0;
-    label5[0] = 0;
-    label6[0] = 0;
-    label7[0] = 0;  
-  }
-   if (label0[0] == '\0') strcpy(label0, "A1");
-   if (label1[0] == '\0') strcpy(label1, "A2");
-   if (label2[0] == '\0') strcpy(label2, "A3");
-   if (label3[0] == '\0') strcpy(label3, "A4");
-   if (label4[0] == '\0') strcpy(label4, "A5");
-   if (label5[0] == '\0') strcpy(label5, "A6");
-   if (label6[0] == '\0') strcpy(label6, "A7");
-   if (label7[0] == '\0') strcpy(label7, "A8");
+  cfgLoad();
+  memcpy(label0, cfgStore.labels[0], sizeof(label0));
+  memcpy(label1, cfgStore.labels[1], sizeof(label1));
+  memcpy(label2, cfgStore.labels[2], sizeof(label2));
+  memcpy(label3, cfgStore.labels[3], sizeof(label3));
+  memcpy(label4, cfgStore.labels[4], sizeof(label4));
+  memcpy(label5, cfgStore.labels[5], sizeof(label5));
+  memcpy(label6, cfgStore.labels[6], sizeof(label6));
+  memcpy(label7, cfgStore.labels[7], sizeof(label7));
+  if (label0[0] == '\0') strcpy(label0, "A1");
+  if (label1[0] == '\0') strcpy(label1, "A2");
+  if (label2[0] == '\0') strcpy(label2, "A3");
+  if (label3[0] == '\0') strcpy(label3, "A4");
+  if (label4[0] == '\0') strcpy(label4, "A5");
+  if (label5[0] == '\0') strcpy(label5, "A6");
+  if (label6[0] == '\0') strcpy(label6, "A7");
+  if (label7[0] == '\0') strcpy(label7, "A8");
   Serial.println("Labels:");
   Serial.println(label0);
   Serial.println(label1);
@@ -862,25 +1204,23 @@ void loadLabels() {
   Serial.println(label7);
 }
 
-/** Store WLAN credentials to EEPROM */
+/** Store labels to flash. */
 void saveLabels() {
-  EEPROM.begin(512);
-  EEPROM.put(100, label0);
-  EEPROM.put(100 + sizeof(label0), label1);
-  EEPROM.put(100 + sizeof(label0) + sizeof(label1), label2);
-  EEPROM.put(100 + sizeof(label0) + sizeof(label1) + sizeof(label2), label3);
-  EEPROM.put(100 + sizeof(label0) + sizeof(label1) + sizeof(label2) + sizeof(label3), label4);
-  EEPROM.put(100 + sizeof(label0) + sizeof(label1) + sizeof(label2) + sizeof(label3) + sizeof(label4), label5);
-  EEPROM.put(100 + sizeof(label0) + sizeof(label1) + sizeof(label2) + sizeof(label3) + sizeof(label4) + sizeof(label5), label6);
-  EEPROM.put(100 + sizeof(label0) + sizeof(label1) + sizeof(label2) + sizeof(label3) + sizeof(label4) + sizeof(label5) + sizeof(label6), label7);
-  char ok[8 + 1] = "OK";
-  EEPROM.put(100 + sizeof(label0) + sizeof(label1) + sizeof(label2) + sizeof(label3) + sizeof(label4) + sizeof(label5) + sizeof(label6) + sizeof(label7), ok);
-  EEPROM.commit();
-  EEPROM.end();
+  cfgLoad(); // preserve ssid/password fields
+  memcpy(cfgStore.labels[0], label0, sizeof(label0));
+  memcpy(cfgStore.labels[1], label1, sizeof(label1));
+  memcpy(cfgStore.labels[2], label2, sizeof(label2));
+  memcpy(cfgStore.labels[3], label3, sizeof(label3));
+  memcpy(cfgStore.labels[4], label4, sizeof(label4));
+  memcpy(cfgStore.labels[5], label5, sizeof(label5));
+  memcpy(cfgStore.labels[6], label6, sizeof(label6));
+  memcpy(cfgStore.labels[7], label7, sizeof(label7));
+  cfgSave();
 }
 
 void handleWifi() {
   if (!authorized()) return;
+  server.sendHeader("Connection", "close");
   // Запрещаем кэширование страницы
   server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   server.sendHeader("Pragma", "no-cache");
@@ -1161,6 +1501,7 @@ void handleWifi() {
 
 void handleNotFound() {
   if (!authorized()) return;
+  server.sendHeader("Connection", "close");
   String message = "File Not Found\n\n";
   message += "URI: ";
   message += server.uri();
@@ -1182,6 +1523,7 @@ void handleNotFound() {
 void handleWifiSave() {
   Serial.println("wifi save");
   if (!authorized()) return;
+  server.sendHeader("Connection", "close");
   // Reject empty SSID to prevent accidental wiping of saved credentials
   String newSsid = server.arg("n");
   newSsid.trim();
@@ -1208,30 +1550,20 @@ void handleWifiSave() {
 }
 
 void loadCredentials() {
-  EEPROM.begin(512);
-  EEPROM.get(0, ssid);
-  EEPROM.get(0 + sizeof(ssid), password);
-  char ok[2 + 1];
-  EEPROM.get(0 + sizeof(ssid) + sizeof(password), ok);
-  EEPROM.end();
-  if (String(ok) != String("OK")) {
-    ssid[0] = 0;
-    password[0] = 0;
-  }
+  cfgLoad();
+  memcpy(ssid, cfgStore.ssid, sizeof(ssid));
+  memcpy(password, cfgStore.password, sizeof(password));
   Serial.println("Recovered credentials:");
   Serial.println(ssid);
   Serial.println(strlen(password) > 0 ? "********" : "<no password>");
 }
 
-/** Store WLAN credentials to EEPROM */
+/** Store WLAN credentials to flash. */
 void saveCredentials() {
-  EEPROM.begin(512);
-  EEPROM.put(0, ssid);
-  EEPROM.put(0 + sizeof(ssid), password);
-  char ok[2 + 1] = "OK";
-  EEPROM.put(0 + sizeof(ssid) + sizeof(password), ok);
-  EEPROM.commit();
-  EEPROM.end();
+  cfgLoad(); // preserve labels fields
+  memcpy(cfgStore.ssid, ssid, sizeof(ssid));
+  memcpy(cfgStore.password, password, sizeof(password));
+  cfgSave();
 }
 
 void turnOffAll()
@@ -1322,14 +1654,14 @@ void setup(void){
         delay(500); 
         flag_off=0;
     }
-    redirectTo("/wifi");
+    handleWifi();
   });
 
   server.on("/APoff", [](){
     if (!authorized()) return;
     flag_off=1;
     WiFi.softAPdisconnect(true);
-    redirectTo("/wifi");
+    handleWifi();
   });
   
   server.on("/socket0On", [](){
@@ -1337,104 +1669,104 @@ void setup(void){
     turnOffAll();
     currentlabel=String(label0);
     digitalWrite(gpio0_pin, HIGH);
-    redirectTo("/switch");
+    handleSWR();
   });
   server.on("/socket0Off", [](){
     if (!authorized()) return;
     turnOffAll();
     currentlabel="OFF";
-    redirectTo("/switch");
+    handleSWR();
   });
   server.on("/socket1On", [](){
     if (!authorized()) return;
     turnOffAll();
     currentlabel=String(label1);
     digitalWrite(gpio1_pin, HIGH);
-    redirectTo("/switch");
+    handleSWR();
   });
   server.on("/socket1Off", [](){
     if (!authorized()) return;
     turnOffAll();
     currentlabel="OFF";
-    redirectTo("/switch");
+    handleSWR();
   });
   server.on("/socket2On", [](){
     if (!authorized()) return;
     turnOffAll();
     digitalWrite(gpio2_pin, HIGH);
     currentlabel=String(label2);
-    redirectTo("/switch");
+    handleSWR();
   });
   server.on("/socket2Off", [](){
     if (!authorized()) return;
     turnOffAll();
     currentlabel="OFF";
-    redirectTo("/switch");
+    handleSWR();
   });
   server.on("/socket3On", [](){
     if (!authorized()) return;
     turnOffAll();
     digitalWrite(gpio3_pin, HIGH);
     currentlabel=String(label3);
-    redirectTo("/switch");
+    handleSWR();
   });
   server.on("/socket3Off", [](){
     if (!authorized()) return;
     turnOffAll();
     currentlabel="OFF";
-    redirectTo("/switch");
+    handleSWR();
   });
   server.on("/socket4On", [](){
     if (!authorized()) return;
     turnOffAll();
     digitalWrite(gpio4_pin, HIGH);
     currentlabel=String(label4);
-    redirectTo("/switch");
+    handleSWR();
   });
   server.on("/socket4Off", [](){
     if (!authorized()) return;
     turnOffAll();
     currentlabel="OFF";
-    redirectTo("/switch");
+    handleSWR();
   });
   server.on("/socket5On", [](){
     if (!authorized()) return;
     turnOffAll();
     digitalWrite(gpio5_pin, HIGH);
     currentlabel=String(label5);
-    redirectTo("/switch");
+    handleSWR();
   });
   server.on("/socket5Off", [](){
     if (!authorized()) return;
     turnOffAll();
     currentlabel="OFF";
-    redirectTo("/switch");
+    handleSWR();
   });
   server.on("/socket6On", [](){
     if (!authorized()) return;
     turnOffAll();
     digitalWrite(gpio6_pin, HIGH);
     currentlabel=String(label6);
-    redirectTo("/switch");
+    handleSWR();
   });
   server.on("/socket6Off", [](){
     if (!authorized()) return;
     turnOffAll();
     currentlabel="OFF";
-    redirectTo("/switch");
+    handleSWR();
   });
   server.on("/socket7On", [](){
     if (!authorized()) return;
     turnOffAll();
     digitalWrite(gpio7_pin, HIGH);
     currentlabel=String(label7);
-    redirectTo("/switch");
+    handleSWR();
   });
   server.on("/socket7Off", [](){
     if (!authorized()) return;
     turnOffAll();
     currentlabel="OFF";
-    redirectTo("/switch");
+    handleSWR();
   });
 /*---------------------------------------*/  
   server.on("/soc0On", [](){
@@ -1442,139 +1774,144 @@ void setup(void){
     stat[0] = '1';
     digitalWrite(gpio0_pin, HIGH);
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   server.on("/soc0Off", [](){
     if (!authorized()) return;
     digitalWrite(gpio0_pin, LOW);
     stat[0] = '0';
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   server.on("/soc1On", [](){
     if (!authorized()) return;
     stat[1] = '1';
     digitalWrite(gpio1_pin, HIGH);
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   server.on("/soc1Off", [](){
     if (!authorized()) return;
     stat[1] = '0';
     digitalWrite(gpio1_pin, LOW);
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   server.on("/soc2On", [](){
     if (!authorized()) return;
     stat[2] = '1';
     digitalWrite(gpio2_pin, HIGH);
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   server.on("/soc2Off", [](){
     if (!authorized()) return;
     stat[2] = '0';
     digitalWrite(gpio2_pin, LOW);
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   server.on("/soc3On", [](){
     if (!authorized()) return;
     stat[3] = '1';
     digitalWrite(gpio3_pin, HIGH);
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   server.on("/soc3Off", [](){
     if (!authorized()) return;
     stat[3] = '0';
     digitalWrite(gpio3_pin, LOW);
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   server.on("/soc4On", [](){
     if (!authorized()) return;
     stat[4] = '1';
     digitalWrite(gpio4_pin, HIGH);
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   server.on("/soc4Off", [](){
     if (!authorized()) return;
     stat[4] = '0';
     digitalWrite(gpio4_pin, LOW);
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   server.on("/soc5On", [](){
     if (!authorized()) return;
     stat[5] = '1';
     digitalWrite(gpio5_pin, HIGH);
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   server.on("/soc5Off", [](){
     if (!authorized()) return;
     stat[5] = '0';
     digitalWrite(gpio5_pin, LOW);
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   server.on("/soc6On", [](){
     if (!authorized()) return;
     stat[6] = '1';
     digitalWrite(gpio6_pin, HIGH);
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   server.on("/soc6Off", [](){
     if (!authorized()) return;
     stat[6] = '0';
     digitalWrite(gpio6_pin, LOW);
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   server.on("/soc7On", [](){
     if (!authorized()) return;
     stat[7] = '1';
     digitalWrite(gpio7_pin, HIGH);
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   server.on("/soc7Off", [](){
     if (!authorized()) return;
     stat[7] = '0';
     digitalWrite(gpio7_pin, LOW);
     CheckStat();
-    redirectTo("/toggle");
+    handleToggle();
   });
   
-  server.begin();
-  Serial.println("HTTP server started");
 }
 
-void connectWifi() {
-  Serial.println("Connecting as wifi client...");
+/** Start connecting to WLAN without blocking (status is polled in loop). */
+void startWifiConnect() {
+  Serial.println("Connecting as wifi client (non-blocking)...");
+  // Keep the softAP active alongside the station connection
+  WiFi.mode(WIFI_AP_STA);
+  // Clear stale station state so begin() reliably initiates a connection
   WiFi.disconnect();
+  delay(50);
   WiFi.begin(ssid, password);
-  int connRes = WiFi.waitForConnectResult();
-  Serial.print("connRes: ");
-  Serial.println(connRes);
 }
 
 
  
 void loop(void){
+  dnsServer.processNextRequest();
+
   if (connect) {
     Serial.println("Connect requested");
     connect = false;
-    connectWifi();
     lastConnectTry = millis();
+    startWifiConnect();
   }
+
   {
     unsigned int s = WiFi.status();
-    if (s == 0 && millis() > (lastConnectTry + 60000)) {
+    // Non-blocking auto-reconnect: retry only if not connected, never block
+    if (s != WL_CONNECTED && strlen(ssid) > 0 && !connect &&
+        millis() > (lastConnectTry + 10000)) {
       connect = true;
     }
     if (status != s) { // WLAN status change
@@ -1590,10 +1927,12 @@ void loop(void){
         Serial.println(WiFi.localIP());
         digitalWrite(gpio8_pin, HIGH);
         flagAP=1;
-      } else if (s == WL_NO_SSID_AVAIL) {
+      } else {
+        /* Disconnected or unavailable */
         digitalWrite(gpio8_pin, LOW);
         flagAP=0;
-        WiFi.disconnect();
+        /* Deliberately do NOT call WiFi.disconnect() here - it can disrupt
+           the radio/softAP and cause instability while the network is scanned. */
       }
     }
   }
