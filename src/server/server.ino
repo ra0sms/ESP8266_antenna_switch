@@ -407,7 +407,12 @@ void CheckStat() {
 
 void handleXML() {
   if (!authorized()) return;
-  server.sendHeader("Connection", "close");
+  // No "Connection: close" here on purpose: this endpoint is polled every
+  // second by the /switch and /toggle pages for as long as they stay open,
+  // so keeping the connection alive (default HTTP/1.1 behavior) avoids
+  // tearing down and re-establishing a TCP connection every second, which
+  // was exhausting ESP8266's small lwIP/heap budget after ~30 min and
+  // triggering a watchdog reset.
   buildXML();
   server.send(200, "text/xml", XML);
 }
@@ -1603,6 +1608,8 @@ void setup(void){
 
   Serial.begin(115200);
   Serial.println();
+  Serial.print("Reset reason: ");
+  Serial.println(ESP.getResetReason());
   Serial.print("Configuring access point...");
   /* You can remove the password parameter if you want the AP to be open. */
   WiFi.softAPConfig(apIP, apIP, netMsk);
@@ -1909,9 +1916,14 @@ void loop(void){
 
   {
     unsigned int s = WiFi.status();
-    // Non-blocking auto-reconnect: retry only if not connected, never block
+    // Non-blocking auto-reconnect: retry only if not connected, never block.
+    // The retry itself calls WiFi.disconnect() before WiFi.begin(), so this
+    // window must stay longer than a normal WPA2 handshake + DHCP lease
+    // (commonly 5-15s, longer with the softAP sharing the radio) - otherwise
+    // we abort our own in-progress connection attempt before it finishes,
+    // which is why connecting used to take several retries instead of one.
     if (s != WL_CONNECTED && strlen(ssid) > 0 && !connect &&
-        millis() > (lastConnectTry + 10000)) {
+        millis() > (lastConnectTry + 20000)) {
       connect = true;
     }
     if (status != s) { // WLAN status change
@@ -1945,6 +1957,14 @@ void loop(void){
     if (hour==24) {day++; hour=0;}
   }
   if ((flagAP==0)&&(tim>0)) tim=sec=minute=hour=day=0;
+
+  static unsigned long lastHeapLog = 0;
+  if (millis() - lastHeapLog > 30000) {
+    lastHeapLog = millis();
+    Serial.print("Free heap: ");
+    Serial.println(ESP.getFreeHeap());
+  }
+
   server.handleClient();
   delay(1);
 }
