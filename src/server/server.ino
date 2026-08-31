@@ -391,6 +391,11 @@ IPAddress netMsk(255, 255, 255, 0);
 boolean connect;
 unsigned long lastConnectTry = 0;
 unsigned int status = WL_IDLE_STATUS;
+// Counts consecutive failed connect attempts since the last success (or
+// credential change). Drives the retry backoff and picks whether a retry
+// does a full WiFi.disconnect()+mode reset (only the first attempt) or a
+// plain WiFi.begin() (subsequent retries) - see startWifiConnect().
+unsigned int wifiRetryCount = 0;
 
 
 void CheckStat() {
@@ -1551,6 +1556,7 @@ void handleWifiSave() {
   server.send(302, "text/plain", "");    // Empty content inhibits Content-length header so we have to close the socket ourselves.
   server.client().stop(); // Stop is needed because we sent no content length
   saveCredentials();
+  wifiRetryCount = 0; // new credentials: next attempt should do a fresh disconnect+begin
   connect = strlen(ssid) > 0; // Request WLAN connect with new credentials if there is a SSID
 }
 
@@ -1891,14 +1897,23 @@ void setup(void){
   
 }
 
-/** Start connecting to WLAN without blocking (status is polled in loop). */
-void startWifiConnect() {
+/** Start connecting to WLAN without blocking (status is polled in loop).
+ * fresh=true (first attempt after boot or new credentials) does a full
+ * WiFi.disconnect()+mode reset before begin(); fresh=false (automatic
+ * retries against an unreachable network) skips that and just calls
+ * begin() again. Repeating the disconnect()+mode() reset on every retry
+ * while the softAP stays active is what was crashing the WiFi SDK
+ * (Exception 9 / LoadStoreError) after a handful of retries when the
+ * saved network was unreachable. */
+void startWifiConnect(bool fresh) {
   Serial.println("Connecting as wifi client (non-blocking)...");
-  // Keep the softAP active alongside the station connection
-  WiFi.mode(WIFI_AP_STA);
-  // Clear stale station state so begin() reliably initiates a connection
-  WiFi.disconnect();
-  delay(50);
+  if (fresh) {
+    // Keep the softAP active alongside the station connection
+    WiFi.mode(WIFI_AP_STA);
+    // Clear stale station state so begin() reliably initiates a connection
+    WiFi.disconnect();
+    delay(50);
+  }
   WiFi.begin(ssid, password);
 }
 
@@ -1911,20 +1926,25 @@ void loop(void){
     Serial.println("Connect requested");
     connect = false;
     lastConnectTry = millis();
-    startWifiConnect();
+    startWifiConnect(wifiRetryCount == 0);
   }
 
   {
     unsigned int s = WiFi.status();
     // Non-blocking auto-reconnect: retry only if not connected, never block.
-    // The retry itself calls WiFi.disconnect() before WiFi.begin(), so this
-    // window must stay longer than a normal WPA2 handshake + DHCP lease
-    // (commonly 5-15s, longer with the softAP sharing the radio) - otherwise
-    // we abort our own in-progress connection attempt before it finishes,
-    // which is why connecting used to take several retries instead of one.
+    // A fresh (first) retry does WiFi.disconnect()+mode reset, so its window
+    // must stay longer than a normal WPA2 handshake + DHCP lease (commonly
+    // 5-15s, longer with the softAP sharing the radio) - otherwise we abort
+    // our own in-progress connection attempt before it finishes. Further
+    // retries against a network that stays unreachable back off (20s, 40s,
+    // 80s, capped at 2min) instead of hammering WiFi.begin() every 20s
+    // forever, which was crashing the WiFi SDK after a handful of retries.
+    unsigned long backoff = 20000UL << min(wifiRetryCount, 3U); // 20/40/80/160s
+    if (backoff > 120000UL) backoff = 120000UL;
     if (s != WL_CONNECTED && strlen(ssid) > 0 && !connect &&
-        millis() > (lastConnectTry + 20000)) {
+        millis() > (lastConnectTry + backoff)) {
       connect = true;
+      wifiRetryCount++;
     }
     if (status != s) { // WLAN status change
       Serial.print("Status: ");
@@ -1939,6 +1959,7 @@ void loop(void){
         Serial.println(WiFi.localIP());
         digitalWrite(gpio8_pin, HIGH);
         flagAP=1;
+        wifiRetryCount = 0; // reset backoff so the next disconnect starts fresh
       } else {
         /* Disconnected or unavailable */
         digitalWrite(gpio8_pin, LOW);
