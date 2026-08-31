@@ -391,11 +391,6 @@ IPAddress netMsk(255, 255, 255, 0);
 boolean connect;
 unsigned long lastConnectTry = 0;
 unsigned int status = WL_IDLE_STATUS;
-// Counts consecutive failed connect attempts since the last success (or
-// credential change). Drives the retry backoff and picks whether a retry
-// does a full WiFi.disconnect()+mode reset (only the first attempt) or a
-// plain WiFi.begin() (subsequent retries) - see startWifiConnect().
-unsigned int wifiRetryCount = 0;
 
 
 void CheckStat() {
@@ -1556,7 +1551,6 @@ void handleWifiSave() {
   server.send(302, "text/plain", "");    // Empty content inhibits Content-length header so we have to close the socket ourselves.
   server.client().stop(); // Stop is needed because we sent no content length
   saveCredentials();
-  wifiRetryCount = 0; // new credentials: next attempt should do a fresh disconnect+begin
   connect = strlen(ssid) > 0; // Request WLAN connect with new credentials if there is a SSID
 }
 
@@ -1897,24 +1891,24 @@ void setup(void){
   
 }
 
-/** Start connecting to WLAN without blocking (status is polled in loop).
- * fresh=true (first attempt after boot or new credentials) does a full
- * WiFi.disconnect()+mode reset before begin(); fresh=false (automatic
- * retries against an unreachable network) skips that and just calls
- * begin() again. Repeating the disconnect()+mode() reset on every retry
- * while the softAP stays active is what was crashing the WiFi SDK
- * (Exception 9 / LoadStoreError) after a handful of retries when the
- * saved network was unreachable. */
-void startWifiConnect(bool fresh) {
-  Serial.println("Connecting as wifi client (non-blocking)...");
-  if (fresh) {
-    // Keep the softAP active alongside the station connection
-    WiFi.mode(WIFI_AP_STA);
-    // Clear stale station state so begin() reliably initiates a connection
-    WiFi.disconnect();
-    delay(50);
-  }
+/** Connect to WLAN. Blocking (waits for the attempt to resolve), matching
+ * the original firmware: WiFi.begin() is only ever called once per attempt
+ * (at boot, or right after the user submits new credentials on /wifi, or
+ * from the rare automatic retry below) instead of being retried repeatedly.
+ * Repeated WiFi.begin() calls in a row against an unreachable network
+ * corrupt the ESP8266 WiFi SDK's internal state and crash it (Exception 9)
+ * after a handful of repeats, no matter how much time separates them - a
+ * non-blocking version that retried every 20s-2min (even with backoff)
+ * still hit this. Never accumulating more than one attempt at a time is
+ * what keeps this safe, at the cost of blocking the web UI for the few
+ * seconds (occasionally up to ~60s) a connection attempt takes to resolve. */
+void connectWifi() {
+  Serial.println("Connecting as wifi client...");
+  WiFi.disconnect();
   WiFi.begin(ssid, password);
+  int connRes = WiFi.waitForConnectResult();
+  Serial.print("connRes: ");
+  Serial.println(connRes);
 }
 
 
@@ -1925,44 +1919,20 @@ void loop(void){
   if (connect) {
     Serial.println("Connect requested");
     connect = false;
+    connectWifi();
     lastConnectTry = millis();
-    startWifiConnect(wifiRetryCount == 0);
   }
 
   {
     unsigned int s = WiFi.status();
-    // Non-blocking auto-reconnect: retry only if not connected, never block.
-    // A fresh (first) retry does WiFi.disconnect()+mode reset, so its window
-    // must stay longer than a normal WPA2 handshake + DHCP lease (commonly
-    // 5-15s, longer with the softAP sharing the radio) - otherwise we abort
-    // our own in-progress connection attempt before it finishes.
-    //
-    // The ESP8266 WiFi SDK's internal state gets corrupted and crashes
-    // (Exception 9) after a fixed small number of WiFi.begin() calls in a
-    // row against a network that stays unreachable - this happens no matter
-    // how much time separates the calls, so a longer backoff alone only
-    // delays the same crash instead of preventing it (confirmed: it still
-    // crashed on the ~6th retry with a 20s-30min backoff ramp). The original
-    // firmware never hit this because it only ever made ONE attempt, then
-    // waited 100 minutes before trying again - it wasn't the long wait that
-    // saved it, it was never accumulating more than one attempt at a time.
-    // So: allow a couple of quick retries for transient hiccups, then stop
-    // and rest for a long cooldown (matching the original's 100 min) before
-    // starting a fresh short burst - this keeps the consecutive-attempt
-    // count low enough to stay under whatever threshold trips the SDK bug.
-    const unsigned int MAX_QUICK_RETRIES = 2;
-    const unsigned long LONG_COOLDOWN = 6000000UL; // 100 min, same as the original firmware
-    unsigned long backoff = (wifiRetryCount < MAX_QUICK_RETRIES)
-      ? (20000UL << wifiRetryCount) // 20s, 40s
-      : LONG_COOLDOWN;
-    if (s != WL_CONNECTED && strlen(ssid) > 0 && !connect &&
-        millis() > (lastConnectTry + backoff)) {
+    // Automatic retry is deliberately almost never triggered (matching the
+    // original firmware): s == WL_IDLE_STATUS is a narrow condition, and
+    // 100 minutes between attempts keeps WiFi.begin() from ever being
+    // called repeatedly, which is what crashes the WiFi SDK (see
+    // connectWifi() above). A user-triggered reconnect (via /wifi) is not
+    // affected by this and always happens immediately.
+    if (s == 0 && millis() > (lastConnectTry + 6000000)) {
       connect = true;
-      if (wifiRetryCount < MAX_QUICK_RETRIES) {
-        wifiRetryCount++;
-      } else {
-        wifiRetryCount = 0; // cooldown served: start a fresh short burst (with a full reset)
-      }
     }
     if (status != s) { // WLAN status change
       Serial.print("Status: ");
@@ -1977,13 +1947,10 @@ void loop(void){
         Serial.println(WiFi.localIP());
         digitalWrite(gpio8_pin, HIGH);
         flagAP=1;
-        wifiRetryCount = 0; // reset backoff so the next disconnect starts fresh
-      } else {
-        /* Disconnected or unavailable */
+      } else if (s == WL_NO_SSID_AVAIL) {
         digitalWrite(gpio8_pin, LOW);
         flagAP=0;
-        /* Deliberately do NOT call WiFi.disconnect() here - it can disrupt
-           the radio/softAP and cause instability while the network is scanned. */
+        WiFi.disconnect();
       }
     }
   }
