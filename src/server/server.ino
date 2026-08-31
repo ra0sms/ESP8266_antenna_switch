@@ -1937,22 +1937,32 @@ void loop(void){
     // 5-15s, longer with the softAP sharing the radio) - otherwise we abort
     // our own in-progress connection attempt before it finishes.
     //
-    // Repeated WiFi.begin() calls against a network that stays unreachable
-    // corrupt the ESP8266 WiFi SDK's internal state after a handful of
-    // repeats and crash it (Exception 9) - this happens even without the
-    // disconnect()/mode() reset, so it's the repetition of begin() itself
-    // that's unsafe, not just the reset. The original firmware only ever
-    // retried once every 100 minutes and never hit this. We keep automatic
-    // recovery (unlike the original, which was effectively "retry never"),
-    // but back off aggressively - doubling from 20s up to a 30-minute cap -
-    // so WiFi.begin() gets called only a handful of times total instead of
-    // dozens of times per hour.
-    unsigned long backoff = 20000UL << min(wifiRetryCount, 7U); // 20/40/80/160/320/640/1280s
-    if (backoff > 1800000UL) backoff = 1800000UL; // cap at 30 min
+    // The ESP8266 WiFi SDK's internal state gets corrupted and crashes
+    // (Exception 9) after a fixed small number of WiFi.begin() calls in a
+    // row against a network that stays unreachable - this happens no matter
+    // how much time separates the calls, so a longer backoff alone only
+    // delays the same crash instead of preventing it (confirmed: it still
+    // crashed on the ~6th retry with a 20s-30min backoff ramp). The original
+    // firmware never hit this because it only ever made ONE attempt, then
+    // waited 100 minutes before trying again - it wasn't the long wait that
+    // saved it, it was never accumulating more than one attempt at a time.
+    // So: allow a couple of quick retries for transient hiccups, then stop
+    // and rest for a long cooldown (matching the original's 100 min) before
+    // starting a fresh short burst - this keeps the consecutive-attempt
+    // count low enough to stay under whatever threshold trips the SDK bug.
+    const unsigned int MAX_QUICK_RETRIES = 2;
+    const unsigned long LONG_COOLDOWN = 6000000UL; // 100 min, same as the original firmware
+    unsigned long backoff = (wifiRetryCount < MAX_QUICK_RETRIES)
+      ? (20000UL << wifiRetryCount) // 20s, 40s
+      : LONG_COOLDOWN;
     if (s != WL_CONNECTED && strlen(ssid) > 0 && !connect &&
         millis() > (lastConnectTry + backoff)) {
       connect = true;
-      wifiRetryCount++;
+      if (wifiRetryCount < MAX_QUICK_RETRIES) {
+        wifiRetryCount++;
+      } else {
+        wifiRetryCount = 0; // cooldown served: start a fresh short burst (with a full reset)
+      }
     }
     if (status != s) { // WLAN status change
       Serial.print("Status: ");
