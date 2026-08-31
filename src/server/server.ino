@@ -1935,12 +1935,20 @@ void loop(void){
     // A fresh (first) retry does WiFi.disconnect()+mode reset, so its window
     // must stay longer than a normal WPA2 handshake + DHCP lease (commonly
     // 5-15s, longer with the softAP sharing the radio) - otherwise we abort
-    // our own in-progress connection attempt before it finishes. Further
-    // retries against a network that stays unreachable back off (20s, 40s,
-    // 80s, capped at 2min) instead of hammering WiFi.begin() every 20s
-    // forever, which was crashing the WiFi SDK after a handful of retries.
-    unsigned long backoff = 20000UL << min(wifiRetryCount, 3U); // 20/40/80/160s
-    if (backoff > 120000UL) backoff = 120000UL;
+    // our own in-progress connection attempt before it finishes.
+    //
+    // Repeated WiFi.begin() calls against a network that stays unreachable
+    // corrupt the ESP8266 WiFi SDK's internal state after a handful of
+    // repeats and crash it (Exception 9) - this happens even without the
+    // disconnect()/mode() reset, so it's the repetition of begin() itself
+    // that's unsafe, not just the reset. The original firmware only ever
+    // retried once every 100 minutes and never hit this. We keep automatic
+    // recovery (unlike the original, which was effectively "retry never"),
+    // but back off aggressively - doubling from 20s up to a 30-minute cap -
+    // so WiFi.begin() gets called only a handful of times total instead of
+    // dozens of times per hour.
+    unsigned long backoff = 20000UL << min(wifiRetryCount, 7U); // 20/40/80/160/320/640/1280s
+    if (backoff > 1800000UL) backoff = 1800000UL; // cap at 30 min
     if (s != WL_CONNECTED && strlen(ssid) > 0 && !connect &&
         millis() > (lastConnectTry + backoff)) {
       connect = true;
