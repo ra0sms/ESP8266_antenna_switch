@@ -15,7 +15,7 @@ June 2025 - Add CSS, improve visability, add authentification
 #include <ESP8266mDNS.h>
 
 
-const bool AUTH = true;
+const bool AUTH = false;
 
 const char* www_username = "admin";
 const char* www_password = "password123";
