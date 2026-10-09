@@ -11,8 +11,30 @@ June 2025 - Add CSS, improve visability, add authentification
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
 #include <ESP8266WebServer.h>
-#include <DNSServer.h>
-#include <ESP8266mDNS.h>
+
+/* ---------------------------------------------------------------------------
+ * WiFi mode switch. STA is the primary way of working with the switch; the
+ * AP exists only as a configuration fallback (it can also be toggled from
+ * the /wifi page with the ON/OFF buttons).
+ *   0 = AP+STA (AP always on)
+ *   1 = AP only
+ *   2 = STA only
+ *   3 = STA primary, AP as fallback  - DEFAULT. The AP is raised only after
+ *                                      the STA stays disconnected for
+ *                                      AP_FALLBACK_DELAY_MS (router down /
+ *                                      wrong credentials) and is shut down
+ *                                      again as soon as the STA connects.
+ * ------------------------------------------------------------------------- */
+#define WIFI_MODE_APSTA      0
+#define WIFI_MODE_APONLY     1
+#define WIFI_MODE_STAONLY    2
+#define WIFI_MODE_STAPRIMARY 3
+#define WIFI_MODE WIFI_MODE_STAPRIMARY
+
+/* How long the STA may stay disconnected before the configuration AP is
+ * brought up automatically (also the AP delay at boot when the router is
+ * not reachable). */
+#define AP_FALLBACK_DELAY_MS 15000UL
 
 
 const bool AUTH = false;
@@ -20,10 +42,9 @@ const bool AUTH = false;
 const char* www_username = "admin";
 const char* www_password = "password123";
  
-
-const char *softAP_ssid = "RKconsole_sn322";
+const char *softAP_ssid = "RKconsole_sn323";
 const char *softAP_password = "1234567890";
-const char *myHostname = "esp8266";
+
  
 char ssid[32] = "";
 char password[32] = "";
@@ -368,10 +389,9 @@ int hour = 0;
 int day = 0;
 int flagAP=0;
 int flag_off=0;
+bool apUp = false;    // true while the configuration AP is running
+bool apAuto = false;  // true when the AP was raised automatically (fallback)
 
-
-const byte DNS_PORT = 53;
-DNSServer dnsServer;
 
 ESP8266WebServer server(80);
 
@@ -1414,13 +1434,13 @@ void handleWifi() {
   Page += String(day) + "d " + String(hour) + "h " + String(minute) + "m " + String(sec) + "s";
   Page += F("</strong></p>");
   
-  // Добавляем управление AP
-  /*Page += F(R"(
+  // Добавляем управление AP (ручное включение конфигурационной точки доступа)
+  Page += F(R"(
     <p>
       <a href="APon" class="btn btn-on">ON</a>
       <a href="APoff" class="btn btn-off">OFF</a>
       Access Point Status: <span class="ap-status )");
-  Page += (flag_off == 0 ? "ap-on\">ON" : "ap-off\">OFF");*/
+  Page += (apUp ? F("ap-on\">ON") : F("ap-off\">OFF"));
   Page += F(R"(</span>
     </p>
   </div>
@@ -1504,6 +1524,19 @@ void handleWifi() {
 }
 
 
+/* Captive-portal connectivity-check endpoints (/generate_204, /fwlink).
+ * These are probed constantly and WITHOUT credentials by Windows (NCSI),
+ * Android and browsers the moment any new device (e.g. a laptop) joins the
+ * network. They must NOT go through authorized(): a 401 Digest challenge is
+ * never "authenticated" by the OS probe, so it retries aggressively and
+ * forever, generating a storm of 401 responses (each one allocating Strings
+ * and Digest nonces on a device with ~40KB of heap). Replying with a bare
+ * 204 tells the OS "internet is fine" and the probes stop. */
+void handleCaptiveProbe() {
+  server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  server.send(204);
+}
+
 void handleNotFound() {
   if (!authorized()) return;
   server.sendHeader("Connection", "close");
@@ -1534,6 +1567,19 @@ void handleWifiSave() {
   newSsid.trim();
   if (newSsid.length() == 0) {
     Serial.println("wifi save rejected: empty SSID");
+    server.sendHeader("Location", "wifi", true);
+    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    server.sendHeader("Pragma", "no-cache");
+    server.sendHeader("Expires", "-1");
+    server.send(302, "text/plain", "");
+    server.client().stop();
+    return;
+  }
+  // A WPA passphrase shorter than 8 characters is invalid; feeding it to
+  // WiFi.begin() is a known trigger of the SDK's association crash
+  // (Exception 9 in ieee80211_getmgtframe, excvaddr 0x0000000f).
+  if (server.arg("p").length() > 0 && server.arg("p").length() < 8) {
+    Serial.println("wifi save rejected: password shorter than 8 chars");
     server.sendHeader("Location", "wifi", true);
     server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     server.sendHeader("Pragma", "no-cache");
@@ -1611,16 +1657,31 @@ void setup(void){
   Serial.print("Reset reason: ");
   Serial.println(ESP.getResetReason());
   Serial.print("Configuring access point...");
+  /* Credentials are stored in our own flash sector (cfgStore); do not let
+   * the SDK also write its config sector on every WiFi.begin() - extra
+   * flash erases right at connection time are pointless (and stall the CPU
+   * while the SDK is trying to associate). */
+  WiFi.persistent(false);
+  /* WiFi modem-sleep (default in STA) is a proven source of sys-context
+   * lwIP corruption on ESP8266: Exception 28 in pbuf_free_LWIP2 with a
+   * garbage pointer, exactly while a burst of incoming packets (device
+   * joining the network) races with the web server sending a response.
+   * The PM nullfunc frames / bb on-off switching showed up in both crash
+   * stacks. This device is mains-powered - disable power save entirely. */
+  WiFi.setSleepMode(WIFI_NONE_SLEEP);
+#if WIFI_MODE == WIFI_MODE_APSTA || WIFI_MODE == WIFI_MODE_APONLY
   /* You can remove the password parameter if you want the AP to be open. */
   WiFi.softAPConfig(apIP, apIP, netMsk);
   WiFi.softAP(softAP_ssid, softAP_password);
+  apUp = true;
+#endif
   delay(500); // Without delay I've seen the IP address blank
   Serial.print("AP IP address: ");
   Serial.println(WiFi.softAPIP());
 
-  /* Setup the DNS server redirecting all the domains to the apIP */
-  dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
-  dnsServer.start(DNS_PORT, "*", apIP);
+  /* DNSServer removed: the console is always opened by IP (192.168.4.1),
+   * so the wildcard captive-portal DNS only wasted a UDP socket + buffer
+   * and left UDP port 53 listening on the whole LAN when in STA mode. */
 
   /*WiFiManager wm;
   bool res;
@@ -1639,26 +1700,28 @@ void setup(void){
   server.on("/switch", handleSWR);
   server.on("/toggle", handleToggle);
   server.on("/wifisave", handleWifiSave);
-  server.on("/generate_204", handleRoot);
-  server.on("/fwlink", handleRoot);  
+  server.on("/generate_204", handleCaptiveProbe);
+  server.on("/fwlink", handleCaptiveProbe);
   server.on("/xml", handleXML);
   server.onNotFound(handleNotFound);
   server.begin(); // Web server start
   Serial.println("HTTP server started");
   loadCredentials(); // Load WLAN credentials from network
   loadLabels();
-  connect = strlen(ssid) > 0; // Request WLAN connect if there is a SSID
-  dnsServer.processNextRequest();
+  connect = (WIFI_MODE != WIFI_MODE_APONLY) && strlen(ssid) > 0; // Request WLAN connect if there is a SSID
   server.handleClient();
 
   
   server.on("/APon", [](){
     if (!authorized()) return;
-    if (flag_off==1)
+    if (flag_off==1 || !apUp)
     {
+        WiFi.mode(WIFI_AP_STA);
         WiFi.softAPConfig(apIP, apIP, netMsk);
         WiFi.softAP(softAP_ssid, softAP_password);
-        delay(500); 
+        apUp = true;
+        apAuto = false;   // raised manually - keep it up until /APoff
+        delay(500);
         flag_off=0;
     }
     handleWifi();
@@ -1666,8 +1729,10 @@ void setup(void){
 
   server.on("/APoff", [](){
     if (!authorized()) return;
-    flag_off=1;
+    flag_off=1;         // also disables the automatic fallback AP
     WiFi.softAPdisconnect(true);
+    apUp = false;
+    apAuto = false;
     handleWifi();
   });
   
@@ -1904,18 +1969,60 @@ void setup(void){
  * seconds (occasionally up to ~60s) a connection attempt takes to resolve. */
 void connectWifi() {
   Serial.println("Connecting as wifi client...");
+
+  /* Exception 9 (epc in ieee80211_getmgtframe, excvaddr near-NULL) was hit
+   * here when the STA tried to build its association frame: the SDK's
+   * management-frame allocation returned almost NULL because the heap was
+   * exhausted by the web server (listening socket + keep-alive /xml clients
+   * + lwIP buffers) at the very moment WiFi.begin() ran - typically right
+   * after the user saved new credentials on /wifi. Free everything we can
+   * and let the SDK settle before beginning the connection. */
+  server.close();          // release the TCP listen socket + accepted clients
+  server.client().stop();
+  yield();
+  delay(200);              // let lwIP free its buffers
+
+  /* Second confirmed trigger of the same Exception 9 (ieee80211_getmgtframe,
+   * excvaddr 0x0000000f, ctx: sys): associating in AP_STA mode while the
+   * softAP is live - the SDK races between building the STA management frame
+   * and moving the AP to the router's channel. Workaround: drop the AP for
+   * the duration of the attempt, associate in STA-only mode, then bring the
+   * AP back up. Clients connected to the ESP's AP (pages opened on
+   * 192.168.4.1) will drop for the seconds the attempt takes. */
+#if WIFI_MODE != WIFI_MODE_STAONLY
+  WiFi.softAPdisconnect(true);
+  apUp = false;
+  apAuto = false;
+#endif
+  WiFi.mode(WIFI_STA);
   WiFi.disconnect();
+  delay(200);              // let the teardown / deauth settle before associating
   WiFi.begin(ssid, password);
   int connRes = WiFi.waitForConnectResult();
   Serial.print("connRes: ");
   Serial.println(connRes);
+
+#if WIFI_MODE == WIFI_MODE_APSTA
+  /* Bring the AP back up immediately (always-on mode). When the STA is
+   * connected the SDK will place the AP on the router's channel. */
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAPConfig(apIP, apIP, netMsk);
+  WiFi.softAP(softAP_ssid, softAP_password);
+  apUp = true;
+#elif WIFI_MODE == WIFI_MODE_STAPRIMARY
+  /* Fallback mode: do NOT bring the AP up here. The loop() logic raises it
+   * only after the STA stays disconnected for AP_FALLBACK_DELAY_MS, so the
+   * softAP DHCP server is not listening on the home LAN while everything
+   * works - that is where the heap corruption was reproduced. */
+#endif
+  delay(200);
+
+  server.begin();          // bring the web server back up
 }
 
 
  
 void loop(void){
-  dnsServer.processNextRequest();
-
   if (connect) {
     Serial.println("Connect requested");
     connect = false;
@@ -1925,13 +2032,14 @@ void loop(void){
 
   {
     unsigned int s = WiFi.status();
-    // Automatic retry is deliberately almost never triggered (matching the
-    // original firmware): s == WL_IDLE_STATUS is a narrow condition, and
-    // 100 minutes between attempts keeps WiFi.begin() from ever being
-    // called repeatedly, which is what crashes the WiFi SDK (see
-    // connectWifi() above). A user-triggered reconnect (via /wifi) is not
-    // affected by this and always happens immediately.
-    if (s == 0 && millis() > (lastConnectTry + 6000000)) {
+    // STA is the primary mode of operation, so a lost connection must be
+    // retried automatically (previously this never really happened: the old
+    // condition s == WL_IDLE_STATUS is almost never true when disconnected).
+    // The periodic WiFi.begin() that used to crash the SDK is safe now that
+    // connectWifi() associates in STA-only mode; each attempt still blocks
+    // the loop and drops the AP for a few seconds, so the interval stays
+    // conservative. A user-triggered reconnect (via /wifi) is immediate.
+    if (s != WL_CONNECTED && millis() > (lastConnectTry + 600000)) {
       connect = true;
     }
     if (status != s) { // WLAN status change
@@ -1954,7 +2062,39 @@ void loop(void){
       }
     }
   }
-  if (flagAP==1) 
+#if WIFI_MODE == WIFI_MODE_STAPRIMARY
+  /* AP-as-fallback state machine: while the STA is disconnected, bring the
+   * configuration AP up after AP_FALLBACK_DELAY_MS; as soon as the STA is
+   * connected again, shut the AP back down. This keeps the softAP DHCP
+   * server off the home LAN during normal operation. */
+  static unsigned long disconnectedSince = 0;
+  if (WiFi.status() != WL_CONNECTED) {
+    if (disconnectedSince == 0) {
+      disconnectedSince = millis();
+    }
+    // Auto-raise only if the user has not explicitly disabled the AP
+    if (flag_off == 0 && !apUp && millis() - disconnectedSince > AP_FALLBACK_DELAY_MS) {
+      Serial.println("Raising configuration AP (fallback)");
+      WiFi.mode(WIFI_AP_STA);
+      WiFi.softAPConfig(apIP, apIP, netMsk);
+      WiFi.softAP(softAP_ssid, softAP_password);
+      apUp = true;
+      apAuto = true;
+    }
+  } else {
+    disconnectedSince = 0;
+    // Auto-shutdown only applies to the automatically raised AP; an AP
+    // started manually from the /wifi page stays up until /APoff.
+    if (apUp && apAuto) {
+      Serial.println("Shutting configuration AP down");
+      WiFi.softAPdisconnect(true);
+      WiFi.mode(WIFI_STA);
+      apUp = false;
+      apAuto = false;
+    }
+  }
+#endif
+  if (flagAP==1)
   {
     tim++; 
     if (tim==1000) {sec++; tim=0;}
@@ -1963,13 +2103,6 @@ void loop(void){
     if (hour==24) {day++; hour=0;}
   }
   if ((flagAP==0)&&(tim>0)) tim=sec=minute=hour=day=0;
-
-  static unsigned long lastHeapLog = 0;
-  if (millis() - lastHeapLog > 30000) {
-    lastHeapLog = millis();
-    Serial.print("Free heap: ");
-    Serial.println(ESP.getFreeHeap());
-  }
 
   server.handleClient();
   delay(1);
