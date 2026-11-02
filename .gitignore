@@ -1,0 +1,13 @@
+# Build output and IDE settings
+build/
+src/server/.vscode/
+
+# Local backups and old experiments
+*.bak
+src/server_v*.zip
+src/server/server_AI/
+
+# Datasheets are kept locally
+docs/datasheets/
+
+pics/example_dl7ust.jpg
