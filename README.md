@@ -2,7 +2,7 @@
 
 A small box that controls an external antenna switch over Wi-Fi from any web browser on a phone, tablet or PC. Scripts and logging software can use its simple HTTP API.
 
-It has 8 high-side outputs, so it works with switches that use a positive control voltage on each line, from 5 to 45 V.
+It has 8 high-side outputs, so it works with switches that use a positive control voltage on each line, from 5 to 45 V. There is also a [4-output version](#4-output-version) for 12 V relays.
 
 ![Switch page](pics/remote_wifi_switch.png)
 
@@ -45,6 +45,19 @@ Schematic:
 ![Schematic](DipTrace/sch_rk.jpg)
 
 The schematic, PCB and Gerber files are in the [DipTrace](DipTrace/) folder.
+
+## 4-output version
+
+The second board has only 4 outputs (A1–A4) that drive 12 V relays, so its supply voltage is limited to **12–14 V DC**. Everything else works the same way, with 4 buttons instead of 8.
+
+* Manuals: [EN](docs/Manual_console_4out_en.pdf), [RU](docs/Manual_console_4out_rus.pdf)
+* Firmware: build with `NUM_OUTPUTS` set to 4 (see [Building](#building)) or use a [prebuilt binary](#prebuilt-binaries)
+
+The rest of this document describes the 8-output version.
+
+![Switch page, 4 outputs](pics/remote_wifi_4out_switch.png)
+
+<img src="pics/remote_wifi_4out_mobile.png" alt="Switch page on a phone, 4 outputs" width="300">
 
 ## Quick start
 
@@ -125,7 +138,7 @@ GET /api/state
 {"mask":5,"labels":["A1","A2","A3","A4","A5","A6","A7","A8"]}
 ```
 
-Bit N of `mask` means that channel N is on: channel 0 is A1, channel 7 is A8. In this example A1 and A3 are on.
+Bit N of `mask` means that channel N is on: channel 0 is A1, channel 7 is A8. In this example A1 and A3 are on. The `labels` array has one name per output, so its length tells how many outputs the box has.
 
 **Change state** (`POST`, form-encoded)
 
@@ -135,7 +148,7 @@ Bit N of `mask` means that channel N is on: channel 0 is A1, channel 7 is A8. In
 | `ch=0..7` and `on=0\|1` | Switch one channel, the others do not change |
 | `off=1` | Turn off all channels |
 
-The response is the new state in the same format as `/api/state`. An invalid value returns HTTP 400. Outputs that go off are released before the new ones turn on.
+On the 4-output version the channels are 0..3. The response is the new state in the same format as `/api/state`. An invalid value returns HTTP 400. Outputs that go off are released before the new ones turn on.
 
 ```sh
 curl -d "sel=2" http://rkconsole.local/set
@@ -157,14 +170,17 @@ Source: [src/server/server.ino](src/server/server.ino)
 
 1. Install the [ESP8266 Arduino core](https://github.com/esp8266/Arduino) 3.1.2. No extra libraries are needed.
 2. Select the board **Generic ESP8266 Module**, Flash Size **1MB (FS:64KB)**, Flash Mode **DOUT**, Reset Method **NodeMCU**.
-3. Upload through the USB port of the NodeMCU module.
+3. For the 4-output board, change `#define NUM_OUTPUTS 8` to `4` at the top of `server.ino`. With arduino-cli the source can stay as it is: `--build-property "compiler.cpp.extra_flags=-DNUM_OUTPUTS=4"`.
+4. Upload through the USB port of the NodeMCU module.
 
 The same build also runs on modules with a larger flash chip.
 
 ### Prebuilt binaries
 
-* [server_without_auth.bin](src/server/server_without_auth.bin): no login
-* [server_with_auth.bin](src/server/server_with_auth.bin): login `admin`, password `password123`
+| Board | No login | Login `admin`, password `password123` |
+|---|---|---|
+| 8 outputs | [server_without_auth.bin](src/server/server_without_auth.bin) | [server_with_auth.bin](src/server/server_with_auth.bin) |
+| 4 outputs | [server_4out_without_auth.bin](src/server/server_4out_without_auth.bin) | [server_4out_with_auth.bin](src/server/server_4out_with_auth.bin) |
 
 Both are built with the settings above. Flashing keeps the saved settings:
 
@@ -185,7 +201,7 @@ Change these values before relying on them: the defaults are public. Do not expo
 
 ### Stored data
 
-Wi-Fi credentials, antenna names and the access point option are stored in a dedicated flash sector, the fifth from the end of the flash. The last four sectors belong to the Wi-Fi SDK, so the firmware must not write there.
+Wi-Fi credentials, antenna names and the access point option are stored in a dedicated flash sector, the fifth from the end of the flash. The format is the same for both board versions. The last four sectors belong to the Wi-Fi SDK, so the firmware must not write there.
 
 ### Updating from older firmware
 
@@ -207,12 +223,14 @@ Wi-Fi credentials, antenna names and the access point option are stored in a ded
 | A8 | 13 | D7 |
 | `WIFI` LED | 15 | D8 |
 
-GPIO0, GPIO2 and GPIO15 are also the ESP8266 boot mode pins.
+The 4-output version uses A1–A4 and the `WIFI` LED on the same pins. GPIO0, GPIO2 and GPIO15 are also the ESP8266 boot mode pins.
 
 ## Documentation
 
 * [Manual (EN)](docs/Manual_console_en.pdf), [editable version](docs/Manual_console_en.docx)
 * [Manual (RU)](docs/Manual_console_rus.pdf), [editable version](docs/Manual_console_rus.docx)
+* [Manual, 4 outputs (EN)](docs/Manual_console_4out_en.pdf), [editable version](docs/Manual_console_4out_en.docx)
+* [Manual, 4 outputs (RU)](docs/Manual_console_4out_rus.pdf), [editable version](docs/Manual_console_4out_rus.docx)
 
 ## Photos
 

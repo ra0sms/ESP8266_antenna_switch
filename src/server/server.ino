@@ -11,9 +11,10 @@ November 2026 - WiFi works the same way as in K9AY controller: non-blocking STA,
 
 HTTP API:
   GET  /api/state            -> {"mask":5,"labels":["A1",...]}  bit N of mask - channel N is on
-  POST /set  sel=0..7        only this channel on, all others off
-             ch=0..7 on=0|1  switch one channel, others are not changed
+  POST /set  sel=N           only this channel on, all others off
+             ch=N on=0|1     switch one channel, others are not changed
              off=1           all channels off
+       N is 0..NUM_OUTPUTS-1
        example: curl -d "sel=2" http://rkconsole.local/set
 */
 
@@ -24,7 +25,15 @@ HTTP API:
 #include <DNSServer.h>
 #include <ESP8266mDNS.h>
 
-#define FW_VERSION "2026-11-02"
+#define FW_VERSION "2026-11-05"
+
+/* Board variant: 8 outputs, or 4 outputs for 12 V relays. */
+#ifndef NUM_OUTPUTS
+#define NUM_OUTPUTS 8
+#endif
+#if NUM_OUTPUTS != 8 && NUM_OUTPUTS != 4
+#error "NUM_OUTPUTS must be 8 or 4"
+#endif
 
 const char *myHostname = "rkconsole";   // http://rkconsole.local
 
@@ -40,9 +49,13 @@ const char *softAP_password = "1234567890";
  
 char ssid[33] = "";
 char password[65] = "";
-char labels[8][32];
+char labels[NUM_OUTPUTS][32];
 
-const uint8_t relayPins[8] = {16, 5, 4, 0, 2, 14, 12, 13};
+#if NUM_OUTPUTS == 8
+const uint8_t relayPins[NUM_OUTPUTS] = {16, 5, 4, 0, 2, 14, 12, 13};
+#else
+const uint8_t relayPins[NUM_OUTPUTS] = {16, 5, 4, 0};
+#endif
 const uint8_t ledPin = 15;
 uint8_t outputs = 0;   // bit N - channel N is on
 char apSsid[33];
@@ -241,10 +254,16 @@ static const char PAGE_CHANNELS[] PROGMEM = R"rawliteral(
     <button class="tile" data-i="1"><b>&nbsp;</b><span>&nbsp;</span></button>
     <button class="tile" data-i="2"><b>&nbsp;</b><span>&nbsp;</span></button>
     <button class="tile" data-i="3"><b>&nbsp;</b><span>&nbsp;</span></button>
+)rawliteral"
+#if NUM_OUTPUTS == 8
+R"rawliteral(
     <button class="tile" data-i="4"><b>&nbsp;</b><span>&nbsp;</span></button>
     <button class="tile" data-i="5"><b>&nbsp;</b><span>&nbsp;</span></button>
     <button class="tile" data-i="6"><b>&nbsp;</b><span>&nbsp;</span></button>
     <button class="tile" data-i="7"><b>&nbsp;</b><span>&nbsp;</span></button>
+)rawliteral"
+#endif
+R"rawliteral(
   </div>
   <button class="wide danger" id="allOff">Turn all OFF</button>
 <script>
@@ -377,7 +396,7 @@ String stateJson() {
   j = F("{\"mask\":");
   j += outputs;
   j += F(",\"labels\":[");
-  for (uint8_t i = 0; i < 8; i++) {
+  for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
     if (i) j += ',';
     j += '"';
     j += jsonEscape(labels[i]);
@@ -392,10 +411,10 @@ void handleState() {
   sendJson(stateJson());
 }
 
-// Channel number from a request argument, -1 if it is not 0..7
+// Channel number from a request argument, -1 if there is no such channel
 int channelArg(const char *name) {
   String v = server.arg(name);
-  return (v.length() == 1 && v[0] >= '0' && v[0] <= '7') ? v[0] - '0' : -1;
+  return (v.length() == 1 && v[0] >= '0' && v[0] < '0' + NUM_OUTPUTS) ? v[0] - '0' : -1;
 }
 
 // Validate all arguments first, then apply
@@ -445,7 +464,7 @@ void setLabel(uint8_t i, const String &v) {
 void handleLabelSave() {
   if (!authorized()) return;
   bool reset = server.hasArg("reset");
-  for (uint8_t i = 0; i < 8; i++) {
+  for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
     String v = reset ? String() : server.arg("l" + String(i));
     v.trim();
     setLabel(i, v);
@@ -466,6 +485,7 @@ void handleLabelSave() {
  * ------------------------------------------------------------------------- */
 #define CFG_SEC_SIZE 4096
 
+// Flash layout is the same for all board variants: always 8 labels
 struct Settings {
   char magic[4];
   char ssid[33];
@@ -548,7 +568,7 @@ static void cfgMigrate() {
 void loadLabels() {
   cfgLoad();
   Serial.println("Labels:");
-  for (uint8_t i = 0; i < 8; i++) {
+  for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
     cfgStore.labels[i][sizeof(labels[i]) - 1] = 0;
     setLabel(i, cfgStore.labels[i]);
     Serial.println(labels[i]);
@@ -874,15 +894,15 @@ void saveCredentials() {
 
 // Break before make: first release everything that has to go off
 void applyOutputs() {
-  for (uint8_t i = 0; i < 8; i++)
+  for (uint8_t i = 0; i < NUM_OUTPUTS; i++)
     if (!(outputs >> i & 1)) digitalWrite(relayPins[i], LOW);
-  for (uint8_t i = 0; i < 8; i++)
+  for (uint8_t i = 0; i < NUM_OUTPUTS; i++)
     if (outputs >> i & 1) digitalWrite(relayPins[i], HIGH);
 }
 
 void setup(void){
   delay(100);
-  for (uint8_t i = 0; i < 8; i++) {
+  for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
     pinMode(relayPins[i], OUTPUT);
     digitalWrite(relayPins[i], LOW);
   }
